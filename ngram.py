@@ -38,7 +38,7 @@ class BackoffSmoothedNgram:
     def cache_invalidated(self):
         return any(ngram.cache_invalidated for ngram in self.ngrams)
 
-    def train_sentence(self, sentence_tokens: Tuple[str, ...]):
+    def train_sentence(self, sentence_tokens: Tuple[str, ...], compute_cache: bool = True):
         for ngram in self.ngrams:
             ngram.train_sentence(sentence_tokens)
         self.vocabulary = set(self.ngrams[0].counts[tuple()].keys())
@@ -51,21 +51,17 @@ class BackoffSmoothedNgram:
                     continuation_count[word] = len(ngram.word_histories[word])
                 bar()
 
-    def entropy(self, sentences_tokens: Sequence[Sequence[str]], compute_cache: bool = False) -> float:
-        if compute_cache:
-            self.compute_cache()
+    def entropy(self, tokens: Sequence[str]) -> float:
         entropy = 0
-        with alive_bar(len(sentences_tokens), title="Computing Entropy") as bar:
-            for sentence_tokens in sentences_tokens:
-                probability = self.probability_sentence(tuple(sentence_tokens))
-                if probability == 0:
-                    continue
-                entropy += probability * math.log(probability, 2)
-                bar()
+        for i in range(self.n - 1, len(tokens)):
+            history = tokens[i - self.n + 1:i]
+            token = tokens[i]
+            probability = self.probability(token, tuple(history))
+            entropy += probability * math.log(probability, 2)
         return -entropy
 
-    def perplexity(self, sentences_tokens: Sequence[Sequence[str]]) -> float:
-        entropy = self.entropy(sentences_tokens)
+    def perplexity(self, tokens: Sequence[str]) -> float:
+        entropy = self.entropy(tokens)
         return 2 ** entropy
 
     def probability(self, word: str, history: Tuple[str, ...]) -> float:
@@ -85,7 +81,7 @@ class BackoffSmoothedNgram:
 class WittenBellSmoothedNGram(BackoffSmoothedNgram):
     def probability(self, word: str, history: Tuple[str, ...]) -> float:
         history = (None,) * (self.n - 1) + history
-        return self._probability(word, history[-(self.n - 1):])
+        return self._probability(word, history[len(history) - (self.n - 1):])
 
     def _probability(self, word: str, history: Tuple[Union[str, None], ...]) -> float:
         ngram_order = len(history) + 1
@@ -116,10 +112,7 @@ class KneserNeySmoothedNGram(BackoffSmoothedNgram):
 
     def probability(self, word: str, history: Tuple[str, ...]) -> float:
         history = (None,) * (self.n - 1) + history
-        return self._probability(word, history[-(self.n - 1):])
-
-    def entropy(self, sentences_tokens: Sequence[Sequence[str]], compute_cache=True):
-        return super().entropy(sentences_tokens, compute_cache)
+        return self._probability(word, history[len(history) - (self.n - 1):])
 
     def _probability(self, word: str, history: Tuple[Union[str, None], ...]) -> float:
         ngram_order = len(history) + 1
@@ -127,7 +120,6 @@ class KneserNeySmoothedNGram(BackoffSmoothedNgram):
             lower_order_probability = 1 / len(self.vocabulary)
         else:
             lower_order_probability = self._probability(word, history[1:])
-
         ngram = self.ngrams[ngram_order - 1]
 
         if history not in ngram.counts:
@@ -153,14 +145,44 @@ class KneserNeySmoothedNGram(BackoffSmoothedNgram):
 
 if __name__ == "__main__":
     from tokenizer import tokenize_english
+    import statistics
 
-    fourgram = WittenBellSmoothedNGram(4)
-    with open("data/Ulysses - James Joyce.txt") as f:
+    test_percentage = 15
+
+    fourgram = KneserNeySmoothedNGram(4)
+    with open(f"data/Ulysses - James Joyce.txt") as f:
         text = f.read()
-    # text = "I am eating chocolate. He is consuming ice-cream."
+
     tokenized_text = tokenize_english(text)
-    with alive_bar(len(tokenized_text), title="Training") as bar:
-        for sentence in tokenize_english(text):
+
+    split_index = -math.floor(test_percentage * len(tokenized_text) / 100)
+    train_text = tokenized_text[:split_index]
+    test_text = tokenized_text[split_index:]
+    with alive_bar(len(train_text), title="Training") as bar:
+        for sentence in train_text:
             fourgram.train_sentence(tuple(sentence))
             bar()
-    print(fourgram.perplexity(tokenized_text))
+
+    fourgram.compute_cache()
+
+    with alive_bar(len(train_text), title="Computing Train Text Entropy") as bar, open(
+            "2021114017_LM3_train-perplexity.txt", "w") as file:
+        perplexities = []
+        for sentence in train_text:
+            perplexities.append(fourgram.perplexity(sentence))
+            bar()
+        avg_perplexity = statistics.mean(perplexities)
+        print(avg_perplexity, file=file)
+        for sentence, perplexity in zip(train_text, perplexities):
+            print(f"{' '.join(sentence)}\t{perplexity}", file=file)
+
+    with alive_bar(len(test_text), title="Computing Test Text Entropy") as bar, open(
+            "2021114017_LM3_test-perplexity.txt", "w") as file:
+        perplexities = []
+        for sentence in test_text:
+            perplexities.append(fourgram.perplexity(sentence))
+            bar()
+        avg_perplexity = statistics.mean(perplexities)
+        print(avg_perplexity, file=file)
+        for sentence, perplexity in zip(test_text, perplexities):
+            print(f"{' '.join(sentence)}\t{perplexity}", file=file)
